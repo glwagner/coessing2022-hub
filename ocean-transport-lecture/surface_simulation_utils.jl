@@ -21,13 +21,13 @@ using Oceananigans.Operators
     return nothing
 end
 
-@inline current_time_index(time, tot_time)       = mod(unsafe_trunc(Int32, time / 1days),     tot_time) + 1
-@inline next_time_index(time, tot_time)          = mod(unsafe_trunc(Int32, time / 1days) + 1, tot_time) + 1
-@inline cyclic_interpolate(u₁::Number, u₂, time) = u₁ + mod(time / 1days, 1) * (u₂ - u₁)
-
+# Interpolation utilities
+@inline current_time_index(t, T, δt)    = mod(unsafe_trunc(Int32, t / δt), T) + 1
+@inline    next_time_index(t, T, δt)    = mod(unsafe_trunc(Int32, t / δt) + 1, T) + 1
+@inline cyclic_interpolate(a, b, t, δt) = a + mod(t / δt, 1) * (b - a)
 
 #####
-##### Load forcing files and inital conditions from ECCO version 4
+##### Forcing files and inital conditions from ECCO version 4
 ##### https://ecco.jpl.nasa.gov/drive/files
 ##### Bathymetry is interpolated from ETOPO1 https://www.ngdc.noaa.gov/mgg/global/
 #####
@@ -44,15 +44,29 @@ dh = DataDep("quarter_degree_near_global_lat_lon",
 DataDeps.register(dh)
 datadep"quarter_degree_near_global_lat_lon"
 
-#####
-##### Grid
-#####
-
+# Load bathymetry
 bathymetry_path = @datadep_str "quarter_degree_near_global_lat_lon/bathymetry-1440x600.jld2"
-bathymetry = jldopen(datadep_path)["bathymetry"]
-bathymetry = arch_array(arch, bathymetry)
-bathymetry_mask = Float64.(bathymetry .>= 0)
+bathymetry = jldopen(bathymetry_path)["bathymetry"]
+bathymetry = Float64.(bathymetry .>= 0)
 
+# Load velocities
+velocities_file = jldopen("prescribed_velocity_field.jld2")
+
+ū = velocities_file["u̅"]
+v̄ = velocities_file["v̅"]
+
+u′ = velocities_file["u"][1:1800]
+v′ = velocities_file["v"][1:1800]
+
+struct PrescribedVelocityTimeSeries{U, V, T}
+    u_time_series :: U
+    v_time_series :: V
+    times :: T
+    time_interval :: Float64
+    total_time :: Float64
+end
+
+#=
 # 0.25 degree resolution
 arch = CPU()
 Nx = 1440
@@ -66,136 +80,60 @@ Nz = 1
                                               z = (0, 1),
                                               precompute_metrics = true)
 
-output_prefix = "near_global_particle_transport_$(Nx)_$(Ny)"
-
 grid = ImmersedBoundaryGrid(underlying_grid, GridFittedBoundary(bathymetry_mask))
-                 
-#####
-##### Load Mean prescribed velocity fields
-#####
-
-velocities_file = jldopen("prescribed_velocity_field.jld2")
-
-const Ū = velocities_file["u̅"]
-const V̄ = velocities_file["v̅"]
-
-const u = velocities_file["u"][1:1800]
-const v = velocities_file["v"][1:1800]
-
-const vel_idx  = length(u)
-const tot_time = length(u)
 
 U = XFaceField(grid)
 V = YFaceField(grid)
+velocities = PrescribedVelocityFields(u=U, v=V)
+                 
+# More generally, U = ū + u′
+set!(U, ū)
+set!(V, v̄)
 
-#####
-##### Include Particles
-#####
+# Particles
+λ₀ = -90
+φ₀ = -60
+n_particles = 10
+degree_spread_λ = 1
+degree_spread_φ = 1
 
-function run_particle_simulation!(λ₀, φ₀, n_particles; degree_spread_λ=1, degree_spread_φ=1, δ_turb=0, Nyears=1)
-    
-    ##### 
-    ##### Setting particle's initial position
-    #####
+λₚ = λ₀ .+ degree_spread_λ .* 2 .* (rand(n_particles) .- 0.5)
+φₚ = φ₀ .+ degree_spread_φ .* 2 .* (rand(n_particles) .- 0.5)
 
-    λₚ = λ₀ .+ degree_spread_λ .* (rand(n_particles) .- 0.5);
-    φₚ = φ₀ .+ degree_spread_φ .* (rand(n_particles) .- 0.5);
+λₚ = arch_array(arch, λₚ)
+φₚ = arch_array(arch, φₚ)
 
-    λₚ = arch_array(arch, λₚ)
-    φₚ = arch_array(arch, φₚ)
+zₚ = arch_array(arch, 0.5 .* ones(n_particles));
+particles = LagrangianParticles(x=λₚ, y=φₚ, z=zₚ)
 
-    zₚ = arch_array(arch, 0.5 .* ones(n_particles));
-    lagrangian_particles = LagrangianParticles(x=λₚ, y=φₚ, z=zₚ)
+model = HydrostaticFreeSurfaceModel(; grid, velocities, particles,
+                                    coriolis = nothing,
+                                    tracers = (),
+                                    buoyancy = nothing,
+                                    closure = nothing)
+@show model
 
-    #####
-    ##### Velocity depending on δ_turb
-    #####
+# Simulation
+Nyears = 1
+simulation = Simulation(model; Δt=6hours, stop_time=Nyears*years)
+simulation.callbacks[:progress] = Callback(progress, IterationInterval(10))
 
-    if δ_turb == 0
-        set!(U, Ū)
-        set!(V, V̄)
-    else
-        uₙ = deepcopy(u)
-        vₙ = deepcopy(v)
+u, v, w = model.velocities
+output_prefix = "near_global_transport_$(Nx)_$(Ny)"
+simulation.output_writers[:surface_fields] = JLD2OutputWriter(model,  (; u, v, particles=model.particles),
+                                                              schedule = TimeInterval(10days),
+                                                              filename = output_prefix * "_tracer",
+                                                              overwrite_existing = true)
 
-        for i in 1:vel_idx
-            @info "$i of $vel_idx"
-            uₙ[i] = δ_turb .* u[i] .+ (1 - δ_turb) .* Ū
-            vₙ[i] = δ_turb .* v[i] .+ (1 - δ_turb) .* V̄
-        end
+# Let's goo!
+@info "Running with Δt = $(prettytime(simulation.Δt))"
 
-        @kernel function _set_velocities!(u_mod, v_mod, u₁, u₂, v₁, v₂, time)
-            i, j, k = @index(Global, NTuple)
-            u_mod[i, j, k] = cyclic_interpolate(u₁[i, j, k], u₂[i, j, k], time)
-            v_mod[i, j, k] = cyclic_interpolate(v₁[i, j, k], v₂[i, j, k], time)
-        end
+run!(simulation)
 
-        @inline function velocity_function(simulation)
-            time = simulation.model.clock.time
-
-            grid = simulation.model.grid
-            n₁ = current_time_index(time, tot_time)
-            n₂ = next_time_index(time, tot_time)
-
-            u₁ = arch_array(arch, uₙ[n₁])
-            u₂ = arch_array(arch, uₙ[n₂])
-            
-            v₁ = arch_array(arch, vₙ[n₁])
-            v₂ = arch_array(arch, vₙ[n₂])
-            
-            u_mod = simulation.model.velocities.u
-            v_mod = simulation.model.velocities.v
-
-            event = launch!(arch, grid, :xyz, _set_velocities!, u_mod, v_mod, u₁, u₂, v₁, v₂, time)
-            wait(device(arch), event)
-
-            return nothing
-        end
-    end
-
-    #####
-    ##### Setup model:
-    #####
-
-    model = HydrostaticFreeSurfaceModel(; grid,
-                                        velocities = PrescribedVelocityFields(u = U, v = V),
-                                        coriolis = nothing,
-                                        tracers = (),
-                                        buoyancy = nothing,
-                                        closure = nothing,
-                                        particles = lagrangian_particles)
-    @show model
-
-    #####
-    ##### Simulation setup
-    #####
-
-    simulation = Simulation(model; Δt=6hours, stop_time=Nyears*years)
-
-    if δ_turb != 0 
-        simulation.callbacks[:interp_vel] = Callback(velocity_function, IterationInterval(1))
-    end
-
-    simulation.callbacks[:progress] = Callback(progress, IterationInterval(10))
-
-    u, v, w = model.velocities
-    simulation.output_writers[:surface_fields] = JLD2OutputWriter(model,  (; u, v, particles=model.particles),
-                                                                schedule = TimeInterval(10days),
-                                                                filename = output_prefix * "_tracer",
-                                                                overwrite_existing = true)
-
-    # Let's goo!
-    @info "Running with Δt = $(prettytime(simulation.Δt))"
-
-    run!(simulation)
-
-    @info """
-
-        Simulation took $(prettytime(simulation.run_wall_time))
-        Time step: $(prettytime(Δt))
-    """
-    return model
-end
+@info """
+    Simulation took $(prettytime(simulation.run_wall_time))
+    Time step: $(prettytime(Δt))
+"""
 
 ####
 #### Plotting results
@@ -253,3 +191,4 @@ function visualize_results(output_prefix)
 
     close(surface_file)
 end
+=#
