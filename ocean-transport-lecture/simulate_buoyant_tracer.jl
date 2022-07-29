@@ -33,31 +33,18 @@ grid = ImmersedBoundaryGrid(underlying_grid, GridFittedBoundary(bathymetry))
 U = XFaceField(grid)
 V = YFaceField(grid)
 velocities = PrescribedVelocityFields(u=U, v=V)
+tracer_advection = WENO()
                  
-# Particles
-λ₀ = -90
-φ₀ = -60
-Nparticles = 1000
-
-Δλ = 4
-Δφ = 4
-
-# Distribute particles in a square of dimension (Δλ, Δφ)
-λᵢ = λ₀ .+ Δλ .* (2rand(Nparticles) .- 1)
-φᵢ = φ₀ .+ Δφ .* (2rand(Nparticles) .- 1)
-
-λᵢ = arch_array(arch, λᵢ)
-φᵢ = arch_array(arch, φᵢ)
-zᵢ = arch_array(arch, ones(Nparticles) / 2)
-
-particles = LagrangianParticles(x=λᵢ, y=φᵢ, z=zᵢ)
-
 # Note: we have to eliminate tracers to avoid time-stepping temperature and salinity.
-model = HydrostaticFreeSurfaceModel(; grid, velocities, particles, tracers=(), buoyancy=nothing)
+model = HydrostaticFreeSurfaceModel(; grid, velocities, buoyancy=nothing,
+                                    tracers=:c, tracer_advection)
 @show model
 
+cᵢ(λ, φ, z) = φ
+set!(model, c=cᵢ)
+
 # Simulation
-simulation = Simulation(model; Δt=6hours, stop_time=35year)
+simulation = Simulation(model; Δt=6hours, stop_time=90days)
 simulation.callbacks[:progress] = Callback(progress, IterationInterval(10))
 
 # Prepare a callback that updates the prescribed velocities
@@ -67,20 +54,21 @@ u = velocities_file["u̅"]
 v = velocities_file["v̅"]
 
 # Uncomment to use fluctuating velocities rather than mean velocities
-# u = velocities_file["u"][1:1800]
-# v = velocities_file["v"][1:1800]
+#u = velocities_file["u"][1:1800]
+#v = velocities_file["v"][1:1800]
 
 velocities_time_series = PrescribedVelocityTimeSeries(u, v, δt=day)
 simulation.callbacks[:update_velocities] = Callback(velocities_time_series)
 
+c = model.tracers.c
 u = model.velocities.u
 v = model.velocities.v
 s = sqrt(u^2 + v^2)
-outputs = (; s, particles=model.particles)
-filename = "near_global_particle_transport.jld2"
+outputs = (; s, c)
+filename = "near_global_tracer_transport.jld2"
 
 simulation.output_writers[:fields] = JLD2OutputWriter(model, outputs; filename,
-                                                      schedule = TimeInterval(30days),
+                                                      schedule = TimeInterval(1day),
                                                       overwrite_existing = true)
 
 # Let's goo!
@@ -90,32 +78,35 @@ run!(simulation)
     Simulation took $(prettytime(simulation.run_wall_time))
 """
 
-st = FieldTimeSeries(filename, "s")
-
-s = interior(st[1], :, :, 1)
-mask = bathymetry .> 0
-s[mask] .= NaN
-λ, φ, z = nodes(st)
-
-file = jldopen(filename)
-iterations = parse.(Int, keys(file["timeseries/t"]))
-x = [file["timeseries/particles/$i"].x for i in iterations]
-y = [file["timeseries/particles/$i"].y for i in iterations]
-close(file)
-
-x = hcat(x...)
-y = hcat(y...)
-
 fig = Figure(resolution=(2400, 1200))
-ax = Axis(fig[1, 1])
+ax = Axis(fig[2, 1])
 
-heatmap!(ax, λ, φ, s, colorrange=(-0.5, 0.5), colormap=:solar, nan_color=:black)
+st = FieldTimeSeries(filename, "s")
+ct = FieldTimeSeries(filename, "c")
 
-for p in 1:Nparticles
-    xp = x[p, :]
-    yp = y[p, :]
-    lines!(ax, xp, yp, color=(:blue, 0.2))
+times = ct.times
+Nt = length(times)
+
+# Mask
+mask = bathymetry .> 0
+for n in 1:Nt
+    c = interior(ct[n], :, :, 1)
+    c[mask] .= NaN
 end
 
+slider = Slider(fig[3, 1], range=1:Nt, startvalue=1)
+n = slider.value
+
+cn = @lift interior(ct[$n], :, :, 1)
+λ, φ, z = nodes(ct)
+heatmap!(ax, λ, φ, cn, colorrange=(-75, 75), colormap=:redblue, nan_color=:black)
+
+title = @lift string("Tracer mixing after t = ", prettytime(times[$n]))
+Label(fig[1, 1], title)
+
 display(fig)
+
+record(fig, "buoyant_tracer.mp4", range=1:Nt, framerate=24) do nn
+    n[] = nn
+end
 

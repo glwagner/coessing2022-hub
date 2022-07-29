@@ -24,8 +24,8 @@ using Oceananigans.Operators
 end
 
 # Interpolation utilities
-@inline current_time_index(t, T, δt)    = mod(unsafe_trunc(Int32, t / δt), T) + 1
-@inline    next_time_index(t, T, δt)    = mod(unsafe_trunc(Int32, t / δt) + 1, T) + 1
+@inline current_time_index(t, Nt, δt)    = mod(unsafe_trunc(Int32, t / δt), Nt) + 1
+@inline    next_time_index(t, Nt, δt)    = mod(unsafe_trunc(Int32, t / δt) + 1, Nt) + 1
 @inline cyclic_interpolate(a, b, t, δt) = a + mod(t / δt, 1) * (b - a)
 
 @kernel function _interpolate_velocities!(u, v, u₁, v₁, u₂, v₂, t, δt)
@@ -41,7 +41,7 @@ struct PrescribedVelocityTimeSeries{U, V, T}
     v_time_series :: V
     times :: T
     time_interval :: Float64
-    total_time :: Float64
+    Nt :: Int
 end
 
 """
@@ -68,15 +68,14 @@ simulation.callbacks[:update_velocities] = Callback(velocities_time_series)
 """
 function PrescribedVelocityTimeSeries(u, v; δt=0.0)
     if u isa Vector
-        Nu = length(u)
-        T = (Nu - 1) * δt
-        times = range(0, step=δt, length=Nu)
+        Nt = length(u)
+        times = range(0, step=δt, length=Nt)
     else
-        T = 0.0
+        Nt = 0
         times = nothing
     end
 
-    return PrescribedVelocityTimeSeries(u, v, times, δt, T)
+    return PrescribedVelocityTimeSeries(u, v, times, δt, Nt)
 end
 
 # functor to be used as a Callback
@@ -93,12 +92,12 @@ function (time_series::PrescribedVelocityTimeSeries)(simulation)
 
     if ut isa Vector # otherwise, "ut" is not a time series
         t = time(simulation)
-        T = time_series.total_time
+        Nt = time_series.Nt
         δt = time_series.time_interval
         
         # Extract velocity data on either side of the time interval
-        n₁ = current_time_index(t, T, δt)
-        n₂ =    next_time_index(t, T, δt)
+        n₁ = current_time_index(t, Nt, δt)
+        n₂ =    next_time_index(t, Nt, δt)
 
         n₁ = Int(n₁)
         n₂ = Int(n₂)
