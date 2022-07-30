@@ -45,7 +45,7 @@ cᵢ(λ, φ, z) = φ
 set!(model, c=cᵢ)
 
 # Simulation
-simulation = Simulation(model; Δt=3hours, stop_time=180days)
+simulation = Simulation(model; Δt=2hours, stop_time=1year)
 simulation.callbacks[:progress] = Callback(progress, IterationInterval(10))
 
 # Prepare a callback that updates the prescribed velocities

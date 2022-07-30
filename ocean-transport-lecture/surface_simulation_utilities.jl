@@ -10,6 +10,7 @@ using Statistics
 using Printf
 
 using KernelAbstractions: @kernel, @index
+using Oceananigans.BoundaryConditions: fill_halo_regions!
 using Oceananigans.Architectures: arch_array, device
 using Oceananigans.TimeSteppers: update_state!
 using Oceananigans.ImmersedBoundaries
@@ -113,7 +114,8 @@ function (time_series::PrescribedVelocityTimeSeries)(simulation)
 
         wait(device(arch), event)
 
-        update_state!(model)
+        fill_halo_regions!(u)
+        fill_halo_regions!(v)
 
     elseif iteration(simulation) == 0
         set!(model, u=ut, v=vt)
