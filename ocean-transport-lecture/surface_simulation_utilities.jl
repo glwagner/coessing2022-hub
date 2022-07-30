@@ -11,6 +11,7 @@ using Printf
 
 using KernelAbstractions: @kernel, @index
 using Oceananigans.Architectures: arch_array, device
+using Oceananigans.TimeSteppers: update_state!
 using Oceananigans.ImmersedBoundaries
 using Oceananigans.Operators
 
@@ -112,9 +113,10 @@ function (time_series::PrescribedVelocityTimeSeries)(simulation)
 
         wait(device(arch), event)
 
+        update_state!(model)
+
     elseif iteration(simulation) == 0
-        set!(u, ut)
-        set!(v, vt)
+        set!(model, u=ut, v=vt)
     end
 
     return nothing

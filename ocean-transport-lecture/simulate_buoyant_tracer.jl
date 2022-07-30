@@ -34,9 +34,10 @@ U = XFaceField(grid)
 V = YFaceField(grid)
 velocities = PrescribedVelocityFields(u=U, v=V)
 tracer_advection = WENO()
+closure = ScalarBiharmonicDiffusivity(κ=100)
                  
 # Note: we have to eliminate tracers to avoid time-stepping temperature and salinity.
-model = HydrostaticFreeSurfaceModel(; grid, velocities, buoyancy=nothing,
+model = HydrostaticFreeSurfaceModel(; grid, velocities, closure, buoyancy=nothing,
                                     tracers=:c, tracer_advection)
 @show model
 
@@ -44,7 +45,7 @@ cᵢ(λ, φ, z) = φ
 set!(model, c=cᵢ)
 
 # Simulation
-simulation = Simulation(model; Δt=6hours, stop_time=90days)
+simulation = Simulation(model; Δt=3hours, stop_time=180days)
 simulation.callbacks[:progress] = Callback(progress, IterationInterval(10))
 
 # Prepare a callback that updates the prescribed velocities
@@ -90,8 +91,8 @@ Nt = length(times)
 # Mask
 mask = bathymetry .> 0
 for n in 1:Nt
-    c = interior(ct[n], :, :, 1)
-    c[mask] .= NaN
+    cc = interior(ct[n], :, :, 1)
+    cc[mask] .= NaN
 end
 
 slider = Slider(fig[3, 1], range=1:Nt, startvalue=1)
@@ -102,11 +103,11 @@ cn = @lift interior(ct[$n], :, :, 1)
 heatmap!(ax, λ, φ, cn, colorrange=(-75, 75), colormap=:redblue, nan_color=:black)
 
 title = @lift string("Tracer mixing after t = ", prettytime(times[$n]))
-Label(fig[1, 1], title)
+Label(fig[1, 1], title, tellwidth=false)
 
 display(fig)
 
-record(fig, "buoyant_tracer.mp4", range=1:Nt, framerate=24) do nn
+record(fig, "buoyant_tracer.mp4", 1:Nt, framerate=24) do nn
     n[] = nn
 end
 
