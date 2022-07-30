@@ -34,7 +34,7 @@ U = XFaceField(grid)
 V = YFaceField(grid)
 velocities = PrescribedVelocityFields(u=U, v=V)
 tracer_advection = WENO()
-closure = ScalarBiharmonicDiffusivity(κ=100)
+closure = ScalarBiharmonicDiffusivity(κ=50)
                  
 # Note: we have to eliminate tracers to avoid time-stepping temperature and salinity.
 model = HydrostaticFreeSurfaceModel(; grid, velocities, closure, buoyancy=nothing,
@@ -45,18 +45,18 @@ cᵢ(λ, φ, z) = φ
 set!(model, c=cᵢ)
 
 # Simulation
-simulation = Simulation(model; Δt=2hours, stop_time=1year)
+simulation = Simulation(model; Δt=1hour, stop_time=3year)
 simulation.callbacks[:progress] = Callback(progress, IterationInterval(10))
 
 # Prepare a callback that updates the prescribed velocities
 velocities_file = jldopen("quarter_degree_velocity_field.jld2")
 
-u = velocities_file["u̅"]
-v = velocities_file["v̅"]
+#u = velocities_file["u̅"]
+#v = velocities_file["v̅"]
 
 # Uncomment to use fluctuating velocities rather than mean velocities
-#u = velocities_file["u"][1:1800]
-#v = velocities_file["v"][1:1800]
+u = velocities_file["u"][1:1800]
+v = velocities_file["v"][1:1800]
 
 velocities_time_series = PrescribedVelocityTimeSeries(u, v, δt=day)
 simulation.callbacks[:update_velocities] = Callback(velocities_time_series)
