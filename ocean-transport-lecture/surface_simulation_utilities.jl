@@ -16,11 +16,41 @@ using Oceananigans.TimeSteppers: update_state!
 using Oceananigans.ImmersedBoundaries
 using Oceananigans.Operators
 
-@inline function progress(sim)
+using Oceananigans.Operators: Δx, Δy
+using Oceananigans.TurbulenceClosures
+
+struct GridDependentDiffusionCoefficient
+    time_scale :: Float64
+    order :: Int
+end
+
+@inline function (c::GridDependentDiffusionCoefficient)(i, j, k, grid, lx, ly, lz, clock, fields)
+    n = Int32(c.order)
+    τ = c.time_scale
+
+    δx = Δx(i, j, k, grid, lx, ly, lz)
+    δy = Δy(i, j, k, grid, lx, ly, lz)
+    δ² = 1 / (1 / δx^2 + 1 / δy^2)
+
+    return δ²^n / τ
+end
+
+mutable struct Progress
+    clock :: Float64
+end
+
+Progress() = Progress(time_ns())
+
+@inline function (p::Progress)(sim)
+
+    elapsed = 1e-9 * (time_ns() - p.clock)
+
     @info @sprintf("Time: % 12s, iteration: %d, wall time: %s",
                     prettytime(sim.model.clock.time),
                     sim.model.clock.iteration,
-                    prettytime(sim.run_wall_time))
+                    prettytime(elapsed))
+
+    p.clock = time_ns()
 
     return nothing
 end

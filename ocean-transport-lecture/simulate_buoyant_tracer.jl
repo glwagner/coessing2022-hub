@@ -7,7 +7,8 @@ using GLMakie
 using Oceananigans: arch_array
 
 include("surface_simulation_utilities.jl")
-using .SurfaceSimulationUtilities: PrescribedVelocityTimeSeries, progress
+using .SurfaceSimulationUtilities: PrescribedVelocityTimeSeries, Progress
+using .SurfaceSimulationUtilities: GridDependentDiffusionCoefficient
 
 # 0.25 degree resolution
 arch = CPU()
@@ -19,7 +20,7 @@ underlying_grid = LatitudeLongitudeGrid(arch,
                                         size = (Nx, Ny, Nz),
                                         longitude = (-180, 180),
                                         latitude = (-75, 75),
-                                        halo = (4, 4, 4),
+                                        halo = (5, 5, 5),
                                         z = (0, 1),
                                         precompute_metrics = true)
 
@@ -33,8 +34,9 @@ grid = ImmersedBoundaryGrid(underlying_grid, GridFittedBoundary(bathymetry))
 U = XFaceField(grid)
 V = YFaceField(grid)
 velocities = PrescribedVelocityFields(u=U, v=V)
-tracer_advection = WENO()
-closure = ScalarBiharmonicDiffusivity(κ=50)
+tracer_advection = WENO(order=5) #UpwindBiased(order=3) #WENO(order=7)
+κ = GridDependentDiffusionCoefficient(20days, 2)
+closure = ScalarBiharmonicDiffusivity(; κ, discrete_form=true)
                  
 # Note: we have to eliminate tracers to avoid time-stepping temperature and salinity.
 model = HydrostaticFreeSurfaceModel(; grid, velocities, closure, buoyancy=nothing,
@@ -45,8 +47,8 @@ cᵢ(λ, φ, z) = φ
 set!(model, c=cᵢ)
 
 # Simulation
-simulation = Simulation(model; Δt=1hour, stop_time=3year)
-simulation.callbacks[:progress] = Callback(progress, IterationInterval(10))
+simulation = Simulation(model; Δt=1hour, stop_time=60days)
+simulation.callbacks[:progress] = Callback(Progress(), IterationInterval(10))
 
 # Prepare a callback that updates the prescribed velocities
 velocities_file = jldopen("quarter_degree_velocity_field.jld2")
